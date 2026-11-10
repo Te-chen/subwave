@@ -70,6 +70,35 @@ class TestDiscovery:
         assert names == ["a.mp4", "b.mp4", "c.mp4"]
 
 
+class TestNameMap:
+    def test_explicit_names_override_convention(self, tmp_path):
+        (tmp_path / "2026-09-08 - original [ADxtQ7stHbE].mp4").write_bytes(b"x")
+        items = pipeline.discover(tmp_path, lang="zh-CN",
+                                  names={"ADxtQ7stHbE": "2026-09-08_中文标题_MassInfluence.mp4"})
+        assert items[0].out_name == "2026-09-08_中文标题_MassInfluence.mp4"
+
+    def test_video_without_map_entry_keeps_default(self, tmp_path):
+        (tmp_path / "a [ADxtQ7stHbE].mp4").write_bytes(b"x")
+        items = pipeline.discover(tmp_path, lang="zh-CN", names={"OTHERID123": "x.mp4"})
+        assert items[0].out_name == "zh-CN - a [ADxtQ7stHbE].mp4"
+
+    def test_load_names_from_list_of_objects(self, tmp_path):
+        p = tmp_path / "titles.json"
+        p.write_text('[{"video_id": "ABC", "filename": "out.mp4"}]', encoding="utf-8")
+        assert pipeline.load_names(p) == {"ABC": "out.mp4"}
+
+    def test_load_names_from_plain_mapping(self, tmp_path):
+        p = tmp_path / "names.json"
+        p.write_text('{"ABC": "out.mp4"}', encoding="utf-8")
+        assert pipeline.load_names(p) == {"ABC": "out.mp4"}
+
+    def test_load_names_skips_rows_without_filename(self, tmp_path):
+        p = tmp_path / "titles.json"
+        p.write_text('[{"video_id": "A", "filename": "a.mp4"}, {"video_id": "B"}]',
+                     encoding="utf-8")
+        assert pipeline.load_names(p) == {"A": "a.mp4"}
+
+
 class TestOutputLayout:
     def test_groups_by_creator_then_language(self, tmp_path):
         creator = tmp_path / "brain-duster"

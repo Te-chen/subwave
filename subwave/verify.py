@@ -63,7 +63,26 @@ def _bright_pixels(path: Path, height: int, width: int, at_s: int) -> int:
     return hits
 
 
+def _caption_is_visible(path: Path, height: int, width: int, duration: float) -> tuple[bool, int]:
+    """Sample several points across the video and look for caption pixels.
+
+    A single sample is unreliable: a gap between cues can land exactly on the
+    chosen timestamp and produce a false negative. Captions are dense in these
+    videos, so if any of the samples finds them, the burn worked.
+    """
+    if duration <= 0:
+        return False, 0
+    points = [duration * r for r in (0.08, 0.25, 0.45, 0.65, 0.85)]
+    best = 0
+    for point in points:
+        best = max(best, _bright_pixels(path, height, width, int(point)))
+        if best > 30:
+            return True, best
+    return best > 30, best
+
+
 def verify(src: Path, *, lang: str, out_dir: Path | None = None,
+           names_file: Path | None = None,
            verbose: bool = True) -> list[Check]:
     src = Path(src)
     # outputs live at <base>/<creator>/<lang>; verify accepts either the base
@@ -73,37 +92,57 @@ def verify(src: Path, *, lang: str, out_dir: Path | None = None,
 
     checks: list[Check] = []
 
-    sources = pipeline.discover(src, lang)
-    outputs = sorted(p for p in lang_dir.glob("*.mp4") if p.name.startswith(f"{lang} - "))
+    names = pipeline.load_names(names_file) if names_file else None
+    sources = pipeline.discover(src, lang, names=names)
 
-    # every output must have a source; partial runs are legitimate
-    missing_source = [o.name for o in outputs
-                      if not (src / o.name[len(lang) + 3:]).exists()]
-    checks.append(Check("every output has a source", not missing_source,
-                        f"{len(missing_source)} unmatched"))
+    # with an explicit name map, outputs are matched by that map; otherwise by
+    # the "<lang> - <source name>" convention
+    if names:
+        expected = {i.out_name: i.path for i in sources if i.video_id in names}
+        outputs = sorted(p for p in lang_dir.glob("*.mp4") if p.name in expected)
+        stray = sorted(p.name for p in lang_dir.glob("*.mp4") if p.name not in expected)
+        checks.append(Check("no unexpected outputs", not stray,
+                            f"{len(stray)} not in name map: {stray[:3]}"))
+    else:
+        expected = {}
+        outputs = sorted(p for p in lang_dir.glob("*.mp4") if p.name.startswith(f"{lang} - "))
+        missing_source = [o.name for o in outputs
+                          if not (src / o.name[len(lang) + 3:]).exists()]
+        checks.append(Check("every output has a source", not missing_source,
+                            f"{len(missing_source)} unmatched"))
+
     checks.append(Check("outputs were produced", len(outputs) > 0,
                         f"{len(outputs)} of {len(sources)} source video(s)"))
 
     for out in outputs:
         info = geometry.ffprobe_json(out)
-        kinds = [s.get("codec_type") for s in info.get("streams", [])]
+        streams = info.get("streams") or []
+        if not streams:
+            # truncated or missing moov atom -- a partial write, not a style issue
+            checks.append(Check(f"readable {out.name[:32]}", False,
+                                f"ffprobe found no streams ({out.stat().st_size} bytes)"))
+            continue
+
+        kinds = [s.get("codec_type") for s in streams]
         checks.append(Check(f"streams {out.name[:32]}",
                             "video" in kinds and "audio" in kinds, str(kinds)))
 
         # duration must match the source video it came from
-        base = out.name[len(lang) + 3:]
-        source_path = src / base
-        if source_path.exists():
+        if names:
+            source_path = expected.get(out.name)
+        else:
+            source_path = src / out.name[len(lang) + 3:]
+        if source_path and Path(source_path).exists():
             src_info = geometry.ffprobe_json(source_path)
             d_out = float(info.get("format", {}).get("duration", 0) or 0)
             d_src = float(src_info.get("format", {}).get("duration", 0) or 0)
             checks.append(Check(f"duration {out.name[:32]}", abs(d_out - d_src) < 1.5,
                                 f"{d_out:.1f} vs {d_src:.1f}"))
 
-            w = int(info["streams"][0]["width"])
-            h = int(info["streams"][0]["height"])
-            hits = _bright_pixels(out, h, w, min(12, max(2, int(d_out * 0.3))))
-            checks.append(Check(f"caption visible {out.name[:32]}", hits > 30, f"{hits}px"))
+            w = int(streams[0]["width"])
+            h = int(streams[0]["height"])
+            visible, hits = _caption_is_visible(out, h, w, d_out)
+            checks.append(Check(f"caption visible {out.name[:32]}", visible, f"{hits}px"))
 
     # subtitle files live in the work area: empty text, overlaps, runaway durations
     ass_dir = lang_dir.parent / "_work" / "ass"

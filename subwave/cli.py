@@ -34,11 +34,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="caption languages to try, comma separated")
     p_make.add_argument("--captions-dir", type=Path, default=None,
                         help="reuse caption files already downloaded to this directory")
+    p_make.add_argument("--names", type=Path, default=None,
+                        help="JSON mapping video id -> output filename "
+                             "(overrides the default naming)")
 
     p_verify = sub.add_parser("verify", help="run the quality gate")
     p_verify.add_argument("src", type=Path)
     p_verify.add_argument("--lang", default="zh-CN")
     p_verify.add_argument("--out", type=Path, default=None)
+    p_verify.add_argument("--names", type=Path, default=None,
+                          help="same name map used for production")
 
     return parser
 
@@ -57,13 +62,15 @@ def main(argv: list[str] | None = None) -> int:
             force=args.force, dry_run=args.dry_run, model=args.model,
             batch_size=args.batch_size, crf=args.crf, font=args.font,
             caption_langs=langs, captions_dir=args.captions_dir,
+            names_file=args.names,
         )
         if args.dry_run:
             return 0
         return 0 if all(r.ok for r in results) else 1
 
     if args.command == "verify":
-        checks = verify.verify(args.src, lang=args.lang, out_dir=args.out)
+        checks = verify.verify(args.src, lang=args.lang, out_dir=args.out,
+                               names_file=args.names)
         return 0 if all(c.ok for c in checks) else 1
 
     return 2

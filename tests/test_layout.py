@@ -60,6 +60,23 @@ class TestWrap:
         for piece in pieces:
             assert any(c.isalnum() or "\u4e00" <= c <= "\u9fff" for c in piece)
 
+    def test_hard_cut_does_not_orphan_a_word_fragment(self):
+        # regression: greedy fill cut "美国农业部门" into "美国农业部" + "门的主管"
+        text = "那三位教授中的一位成为了美国农业部营养部门的主管。"
+        pieces = layout.split_to_width(text, fixed_measure(), max_px=962, max_chars=21)
+        assert "".join(pieces) == text
+        assert not any(p.startswith("门") for p in pieces)
+        # halves should be roughly even rather than 21 chars then 5
+        assert max(len(p) for p in pieces) - min(len(p) for p in pieces) <= 8
+
+    def test_latin_acronym_is_never_split(self):
+        text = "他成了 USDA 的主管并推动了整件事"
+        pieces = layout.split_to_width(text, fixed_measure(), max_px=380, max_chars=12)
+        joined = "".join(pieces)
+        assert joined == text
+        # the token must survive intact in one piece, not be cut in half
+        assert any("USDA" in p for p in pieces)
+
 
 class TestLayout:
     def test_matching_clause_counts_use_english_timing(self):

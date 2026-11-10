@@ -57,15 +57,43 @@ def video_id_from_name(name: str) -> str | None:
     return match.group(1) if match else None
 
 
-def discover(src: Path, lang: str, recursive: bool = False) -> list[Item]:
+def discover(src: Path, lang: str, recursive: bool = False,
+             names: dict[str, str] | None = None) -> list[Item]:
+    """List source videos. ``names`` maps video id -> desired output filename.
+
+    Naming defaults to ``<lang> - <original name>``. A caller that has curated
+    titles can pass an explicit map instead, which is what lets an output be
+    named after a human-approved title rather than the source filename.
+    """
     src = Path(src)
     pattern = "**/*" if recursive else "*"
     items = []
     for path in sorted(src.glob(pattern)):
         if not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
             continue
-        items.append(Item(path, video_id_from_name(path.name), f"{lang} - {path.name}"))
+        vid = video_id_from_name(path.name)
+        out_name = (names or {}).get(vid or "", f"{lang} - {path.name}")
+        items.append(Item(path, vid, out_name))
     return items
+
+
+def load_names(path: Path) -> dict[str, str]:
+    """Read an output-name map from JSON.
+
+    Accepts either a list of objects containing video_id + filename, or a plain
+    {video_id: filename} mapping.
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if isinstance(data, dict):
+        return {str(k): str(v) for k, v in data.items() if v}
+
+    names: dict[str, str] = {}
+    for row in data:
+        vid = row.get("video_id")
+        name = row.get("filename")
+        if vid and name:
+            names[str(vid)] = str(name)
+    return names
 
 
 def output_root(src: Path, out_dir: Path | None, lang: str) -> Path:
@@ -273,6 +301,7 @@ def run(src: Path, *, lang: str, out_dir: Path | None = None,
         batch_size: int = 20, crf: int = 20, font: str | None = None,
         caption_langs: tuple[str, ...] = CAPTION_LANGS,
         captions_dir: Path | None = None,
+        names_file: Path | None = None,
         verbose: bool = True) -> list[Result]:
     src = Path(src)
     if not src.is_dir():
@@ -280,9 +309,19 @@ def run(src: Path, *, lang: str, out_dir: Path | None = None,
 
     out_root = output_root(src, out_dir, lang)
     work_dir = out_root.parent / "_work"
-    items = discover(src, lang)
+    names = load_names(names_file) if names_file else None
+    items = discover(src, lang, names=names)
     if limit:
         items = items[:limit]
+
+    if names is not None and verbose:
+        unmatched = [i.path.name for i in items if i.video_id and i.video_id not in names]
+        if unmatched:
+            print(f"warning: {len(unmatched)} video(s) have no name in the map; "
+                  f"using default naming")
+        unused = [k for k in names if k not in {i.video_id for i in items}]
+        if unused:
+            print(f"warning: {len(unused)} name(s) in the map match no video")
 
     if captions_dir:
         copied = seed_captions([i.video_id for i in items if i.video_id],

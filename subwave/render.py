@@ -1,6 +1,7 @@
 """ffmpeg rendering and font discovery."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -28,8 +29,11 @@ def render(source: Path, ass_path: Path, target: Path, *,
     """Burn the ASS file into the video. Runs ffmpeg from the ASS directory so the
     filter argument stays a bare filename (a Windows drive colon breaks parsing)."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    # absolute paths: ffmpeg runs from the ASS directory, so relative source
-    # and target paths would resolve against the wrong base
+    # Write to a temp name and rename on success. ffmpeg finalises the moov atom
+    # last, so an interrupted render leaves a file that exists but is unplayable;
+    # renaming atomically means a half-written file is never mistaken for a
+    # finished one by the "skip existing" check.
+    tmp = target.with_name(f".{target.stem}.partial{target.suffix}")
     cmd = [
         "ffmpeg", "-y", "-v", "error",
         "-i", str(Path(source).resolve()),
@@ -37,9 +41,11 @@ def render(source: Path, ass_path: Path, target: Path, *,
         "-c:v", encoder, "-crf", str(crf), "-preset", preset,
         "-c:a", "aac", "-b:a", audio_bitrate,
         "-movflags", "+faststart",
-        str(Path(target).resolve()),
+        str(tmp.resolve()),
     ]
     result = subprocess.run(cmd, cwd=str(ass_path.parent), capture_output=True)
     if result.returncode != 0:
+        tmp.unlink(missing_ok=True)
         raise RuntimeError(
             "ffmpeg failed:\n" + result.stderr.decode("utf-8", "replace")[-1500:])
+    os.replace(tmp, target)
